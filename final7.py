@@ -60,8 +60,9 @@ def display_on_oled(date_time, runtime_text, shift, ldr_voltage):
     draw.text((0, 0), date_time, font=font, fill=1)
 
     # Draw runtime information and shift below the date and time
+    custom_text = "Shift: "
     draw.text((0, 16), runtime_text, font=font, fill=1)
-    draw.text((0, 32), shift, font=font, fill=1)
+    draw.text((0, 32), custom_text + shift, font=font, fill=1)
 
     # Draw LDR voltage information below the shift
     draw.text((0, 48), f"LDR Voltage: {ldr_voltage:.2f}V", font=font, fill=1)
