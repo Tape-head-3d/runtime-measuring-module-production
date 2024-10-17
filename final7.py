@@ -5,7 +5,7 @@ import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
 import adafruit_ssd1306
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime, timedelta
+from datetime import datetime
 import digitalio
 import csv
 import threading
@@ -60,9 +60,8 @@ def display_on_oled(date_time, runtime_text, shift, ldr_voltage):
     draw.text((0, 0), date_time, font=font, fill=1)
 
     # Draw runtime information and shift below the date and time
-    custom_text = "Shift: "
     draw.text((0, 16), runtime_text, font=font, fill=1)
-    draw.text((0, 32), custom_text + shift, font=font, fill=1)
+    draw.text((0, 32), shift, font=font, fill=1)
 
     # Draw LDR voltage information below the shift
     draw.text((0, 48), f"LDR Voltage: {ldr_voltage:.2f}V", font=font, fill=1)
@@ -70,7 +69,7 @@ def display_on_oled(date_time, runtime_text, shift, ldr_voltage):
     # Display the image on OLED
     oled.image(image)
     oled.show()
-    
+
 # Function to get LDR value and corresponding voltage
 def read_ldr():
     return ldr_channel.value, ldr_channel.voltage
@@ -82,11 +81,6 @@ def format_runtime(seconds):
     seconds = int(seconds % 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
-# Function to get the current shift based on the time of day
-def get_shift():
-    current_hour = datetime.now().hour
-    return "Day" if 6 <= current_hour < 18 else "Night"
-
 # Function to log data to CSV in a separate thread to avoid delays
 def log_data_to_csv(date, shift, runtime):
     with open(log_file_path, mode='a', newline='') as log_file:
@@ -97,7 +91,11 @@ def log_data_to_csv(date, shift, runtime):
 def log_to_csv_in_thread(date, shift, runtime):
     log_thread = threading.Thread(target=log_data_to_csv, args=(date, shift, runtime))
     log_thread.start()
-    
+
+# Function to get the current shift alternately every 3 minutes
+def get_shift(shift_counter):
+    return "Day" if shift_counter % 2 == 0 else "Night"
+
 # Function to monitor LDR and determine when the machine is on
 def monitor_ldr_runtime():
     machine_on = False
@@ -106,13 +104,15 @@ def monitor_ldr_runtime():
     last_logged_time = None
     last_runtime = ""  # Track last OLED display runtime to avoid unnecessary updates
     last_update_time = time.monotonic()  # Track when OLED was last updated
+    shift_counter = 0  # Counter to alternate shift every 3 minutes
+    start_time = time.monotonic()  # Starting time to manage 3-minute interval
 
     while True:
         # Get current date and time from Raspberry Pi
         current_date = datetime.now().strftime("%Y-%m-%d")
         current_time = datetime.now().strftime("%H:%M:%S")
         date_time = f"{current_date}    {current_time}"  # Date and time in the same line
-        shift = get_shift()  # Determine if it's day or night shift
+        shift = get_shift(shift_counter)  # Alternating day/night shift every 3 minutes
 
         ldr_value, ldr_voltage = read_ldr()
 
@@ -130,38 +130,40 @@ def monitor_ldr_runtime():
                 total_runtime = time.monotonic() - runtime_start  # Pause runtime
                 print(f"Runtime paused at: {format_runtime(total_runtime)}")
 
-        # Display date, time, runtime, shift, and LDR voltage information on OLED
+        # Calculate runtime
         if machine_on:
             runtime_duration = time.monotonic() - runtime_start
             runtime_display_text = f"Runtime: {format_runtime(runtime_duration)}"
         else:
             runtime_display_text = f"Runtime: {format_runtime(total_runtime)}"
 
-        # Update OLED only if the runtime changes or at least 2 seconds have passed since the last update
+        # Update OLED every 2 seconds or if runtime changes
         if last_runtime != runtime_display_text or (time.monotonic() - last_update_time) >= 2:
             display_on_oled(date_time, runtime_display_text, shift, ldr_voltage)
             last_runtime = runtime_display_text
             last_update_time = time.monotonic()
 
-        # Get the current hour and check for logging time (06:00:00 or 18:00:00)
-        now = datetime.now()
-        if (now.hour == 6 or now.hour == 18) and now.minute == 0 and now.second == 0:
-            if last_logged_time is None or (now - last_logged_time) >= timedelta(hours=12):
-                # Log to CSV just before resetting runtime
-                runtime_to_log = total_runtime if not machine_on else (time.monotonic() - runtime_start)
-                log_to_csv_in_thread(current_date, shift, format_runtime(runtime_to_log))
+        # Check if 3 minutes have passed
+        if (time.monotonic() - start_time) >= 180:
+            # Log to CSV just before resetting runtime
+            runtime_to_log = total_runtime if not machine_on else (time.monotonic() - runtime_start)
+            log_to_csv_in_thread(current_date, shift, format_runtime(runtime_to_log))
 
-                # Reset the runtime after logging
-                total_runtime = 0  # Reset runtime
-                runtime_start = time.monotonic()  # Reset start time
+            # Reset runtime after logging
+            total_runtime = 0
+            runtime_start = time.monotonic()
 
-                # Update OLED to reflect reset runtime (showing 00:00:00)
-                display_on_oled(date_time, "Runtime: 00:00:00", shift, ldr_voltage)
-                
-                last_logged_time = now  # Record last logging time
+            # Update OLED to reflect reset runtime (showing 00:00:00)
+            display_on_oled(date_time, "Runtime: 00:00:00", shift, ldr_voltage)
+
+            # Reset 3-minute timer
+            start_time = time.monotonic()
+
+            # Alternate the shift for the next 3 minutes
+            shift_counter += 1
 
         # Faster loop with reduced sleep time for higher accuracy
-        time.sleep(0.005)  # 5 ms sleep for quick response
+        time.sleep(0.01)  # 10 ms sleep for quick response
 
 # Main loop
 try:
